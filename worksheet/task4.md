@@ -1,8 +1,8 @@
 # Task 4: Deployment topologies and trade-offs
 
-**Name / ชื่อ:**
+**Name / ชื่อ:** ชรัยย์รัชฏ์ แสวงทรัพย์
 
-**Student ID / รหัสนิสิต:**
+**Student ID /** รหัสนิสิต: 6870049221
 
 This is **individual work**: each student completes and submits their own copy, in their own fork.
 
@@ -58,9 +58,10 @@ The three most important quality requirements for your scenario, each with a num
 
 | # | Quality | Requirement |
 |---|---|---|
-| 1 | | |
-| 2 | | |
-| 3 | | |
+| 1 | Availability | The system shall receive all reviews even when the client is offline |
+| 2 | Reliability | The system shall ensure that all reviews are recorded |
+| 3 | Timeliness | The system shall label all reviews by the end of the day |
+
 
 ## 2. Design / การออกแบบ
 
@@ -68,16 +69,42 @@ Your topology, the patterns you add, and a container-level diagram (C4 level 2).
 
 *topology ที่เลือก pattern ที่เพิ่ม และ diagram ระดับ container (C4 level 2) เขียนด้วย Mermaid*
 
+> เลือก T4 Asynchronous / batch กับ cascade และ fallback
+
 ```mermaid
 C4Container
-    title Your design: container diagram
-    %% Replace the example below with your own people, containers and relationships.
-    %% See the CampusEats C4 diagram in README.md for the full syntax.
-    Person(customer, "Customer", "Writes restaurant reviews")
-    System_Boundary(campuseats, "CampusEats") {
-        Container(review, "Review service", "Python, FastAPI", "What it does")
+    title Canteen kiosk: T4 Asynchronous/batch + Cascade + Fallback
+
+    Person(student, "Student", "สร้างรีวิวบน tablet")
+    Person(owner, "Restaurant owner", "ดูรีวิวและ label ของร้านตัวเอง")
+
+    System_Boundary(frontend, "Frontend - Tablet") {
+        Container(tablet, "Tablet app", "On tablet", "สร้างรีวิวและดูรีวิว")
+        ContainerDb(outbox, "Outbox Sync", "Local storage", "เก็บรีวิวเมื่อ Offline และส่งเมื่อ Wi-Fi กลับมา")
     }
-    Rel(customer, review, "Posts reviews", "HTTP/JSON")
+
+    System_Boundary(backend, "Backend - Server") {
+        Container(gateway, "API gateway", "Python, FastAPI", "รับรีวิวและ request จาก Tablet")
+        Container(review, "Review service", "Python, FastAPI", "บันทึกและอ่านรีวิวกับ label")
+        ContainerDb(reviewdb, "Review DB", "Database", "เก็บรีวิว สถานะ และ label")
+        Container(batch, "Batch job", "Scheduled job", "ทุก 1 ชม. หรือครบ 1,000 รายการ รอบสุดท้าย 23:00 น.")
+        ContainerQueue(queue, "Message queue", "Message broker", "พักรีวิวที่รอติด label")
+        Container(inference, "Inference service", "Python, FastAPI", "Cascade threshold 0.7; timeout 10s หรือ error ให้คง pending เพื่อ retry")
+    }
+
+    Rel(student, tablet, "สร้างรีวิว")
+    Rel(owner, tablet, "ดูรีวิวและ label")
+    Rel(tablet, outbox, "บันทึกรีวิวในเครื่อง")
+    Rel(tablet, gateway, "ขอดูรีวิวและ label", "HTTP/JSON")
+    Rel(outbox, gateway, "Sync รีวิวเมื่อ Online", "HTTP/JSON")
+    Rel(gateway, review, "ส่งต่อ request", "HTTP/JSON")
+    Rel(review, reviewdb, "บันทึกและอ่านรีวิว")
+    Rel(batch, reviewdb, "กวาดรีวิว pending และบันทึก label")
+    Rel(batch, queue, "ส่งรีวิวเข้าคิว")
+    Rel(queue, inference, "ส่งรีวิวเพื่อติด label")
+    Rel(inference, batch, "คืนผล label หรือ timeout/error")
+
+    UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="2")
 ```
 
 ## 3. Evidence / หลักฐาน
@@ -88,8 +115,10 @@ Which runs support your choice? Show the numbers and, for scenario A, the capaci
 
 | Run | What it shows / แสดงอะไร |
 |---|---|
-| | |
-| | |
+| t2-0.7 | Cascade threshold 0.7 ให้ Accuracy 93.0% และเรียก Large Model 53% ช่วยลดจำนวน Calls ลง 47% เมื่อเทียบกับ Baseline โดย Accuracy ลดลงเพียง 0.5 percentage points |
+| baseline | ถ้าไม่ใช้ cascade จะต้องเรียก large model ที่ 100% |
+| t0-small | การใช้แต่ small model มีความแม่นยำต่ำ แค่ 72.5% จึงไม่สามารถใช้แต่ small model ได้ |
+| t1-after | เรามีการแยกการบันทึกออกจากการติด label อยู่แล้ว ข้อมูลจะไม่หายไป กรณีล้มเหลวเป็น 0 แต่แลกกับระยะเวลานานขึ้น เพื่อตอบเรื่อง reliability ตาม requirement ที่ review ต้องไม่หายไป |
 
 ## 4. ADR
 
@@ -97,20 +126,21 @@ Use the ADR format from W5.
 
 *ใช้รูปแบบ ADR จาก W5*
 
-**Title:**
+**Title:** Asynchronous batch labeling (T4) with a 0.7 cascade for the canteen kiosk
 
 **Status:** Proposed
 
-**Context:**
+**Context:** Tablet ในโรงอาหารมี Wi-Fi ไม่เสถียร ระบบต้องรับรีวิวได้แม้ Offline และติด Label ภายในสิ้นวัน (24:00) โดย Large Model รองรับสูงสุด 20 calls/s การทดลอง t2-0.7 ให้ Accuracy 93.0% และใช้ Large Model เพียง 53% เทียบกับ Baseline 100%
 
-**Decision:**
+**Decision:** เลือก T4 Asynchronous/Batch + Cascade (threshold 0.7) + Fallback เมื่อ Timeout/Error โดยเก็บงานเป็น Pending เพื่อ Retry
+
 
 **Consequences:**
-- Positive:
-- Negative:
+- Positive: รีวิวไม่หายเมื่อ Wi-Fi หลุด เพราะเก็บใน Outbox และ Sync เมื่อกลับมา Online อีกทั้งลด Large Model Calls ได้ 47% จาก Baseline
+- Negative: Label ไม่ออกทันที ต้องรอ Batch สูงสุดประมาณ 1 ชั่วโมงตามรอบปกติ หาก Wi-Fi ไม่กลับมาก่อนสิ้นวัน รีวิวจะค้างใน Outbox และต้องยอมประมวลผลวันถัดไป นอกจากนี้ Accuracy ลดลงจาก 93.5% เหลือ 93.0%
 
 **Alternatives considered:** at least one topology you rejected, and why.
 
 *อย่างน้อยหนึ่ง topology ที่ไม่เลือก และเหตุผล*
 
->
+> T3 (Hybrid): Small Model บน Tablet ให้ Label ได้ทันทีแม้ Offline แต่ไม่จำเป็น เพราะ Requirement ยอมให้ประมวลผลถึงสิ้นวัน อีกทั้งรีวิวประมาณ 53% (t2-0.7) ยังต้องส่งไป Large Model ผ่านเครือข่าย จึงยังต้องมี Outbox และรอ Wi-Fi เหมือนเดิม นอกจากนี้ยังเพิ่มภาระ Maintenance เพราะต้อง Deploy และอัปเดต Model บน Tablet ทุกเครื่อง แทนที่จะดูแลจาก Server ส่วนกลาง

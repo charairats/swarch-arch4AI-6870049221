@@ -23,7 +23,7 @@ async def classify(client: httpx.AsyncClient, text: str) -> dict:
     #
     # Step 1. Timeout. The client was created with timeout=None, so today
     #   client.post(...) waits forever. Pass a timeout for this one call:
-    #       client.post(url, json=..., timeout=<seconds>)
+    #       client.post(url, json=..., timeout=settings.INFERENCE_TIMEOUT_S)
     #   Use settings.INFERENCE_TIMEOUT_S (1 s), not a number typed in here.
     #   When the time runs out, httpx raises httpx.TimeoutException.
     #
@@ -31,10 +31,16 @@ async def classify(client: httpx.AsyncClient, text: str) -> dict:
     #   the inference service answers with an error (HTTP 4xx or 5xx).
     #   Both exceptions are subclasses of httpx.HTTPError, so one except
     #   clause catches both. Wrap the three lines below like this:
-    #       try:
-    #           ...the call, raise_for_status() and the return below...
-    #       except <which exception class?>:
-    #           return <a pending review>
+    try:
+        r = await client.post(
+            f"{settings.INFERENCE_URL}/predict",
+            json={"text": text},
+            timeout=settings.INFERENCE_TIMEOUT_S,
+        )
+        r.raise_for_status()
+        return {**r.json(), "status": "scored"}
+    except httpx.HTTPError:
+        return dict(PENDING)
     #
     # Step 3. Fallback. In the except clause, return a *copy* of PENDING
     #   (dict(PENDING)), not PENDING itself. PENDING is one shared dict: if
